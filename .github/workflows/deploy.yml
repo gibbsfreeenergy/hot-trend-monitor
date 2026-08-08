@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   packages: write
 
@@ -43,21 +44,21 @@ jobs:
       - name: Export image archive
         run: docker save "${{ env.IMAGE }}:${{ github.sha }}" | gzip -1 > hot-trend-monitor.tar.gz
 
-      - name: Copy image archive to server
-        uses: appleboy/scp-action@v0.1.7
+      - name: Upload image archive
+        id: image-artifact
+        uses: actions/upload-artifact@v4
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          password: ${{ secrets.DEPLOY_PASSWORD }}
-          port: 22
-          source: hot-trend-monitor.tar.gz
-          target: /tmp/
-          overwrite: true
+          name: hot-trend-monitor-image
+          path: hot-trend-monitor.tar.gz
+          retention-days: 1
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.2
         env:
           IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ARTIFACT_ID: ${{ steps.image-artifact.outputs.artifact-id }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           NEWSNOW_API_URL: ${{ secrets.NEWSNOW_API_URL }}
@@ -71,7 +72,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: 22
-          envs: IMAGE,DATABASE_URL,REDIS_URL,NEWSNOW_API_URL,NEWSNOW_XHS_ID,XHS_TREND_URL,XHS_COOKIE,HTTP_PROXY_URL,COLLECT_INTERVAL_SECONDS
+          envs: IMAGE,GITHUB_TOKEN,GITHUB_REPOSITORY,ARTIFACT_ID,DATABASE_URL,REDIS_URL,NEWSNOW_API_URL,NEWSNOW_XHS_ID,XHS_TREND_URL,XHS_COOKIE,HTTP_PROXY_URL,COLLECT_INTERVAL_SECONDS
           script_stop: true
           script: |
             set -eu
@@ -92,6 +93,20 @@ jobs:
             ALLOW_SAMPLE_FALLBACK=true
             LOG_LEVEL=INFO
             EOF
+
+            curl --fail --location --silent --show-error \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+              -o /tmp/hot-trend-monitor-artifact.zip
+            python3 - /tmp/hot-trend-monitor-artifact.zip <<'PY'
+            import sys
+            import zipfile
+
+            with zipfile.ZipFile(sys.argv[1]) as archive:
+                archive.extract("hot-trend-monitor.tar.gz", "/tmp")
+            PY
+            rm -f /tmp/hot-trend-monitor-artifact.zip
             gzip -dc /tmp/hot-trend-monitor.tar.gz | docker load
             rm -f /tmp/hot-trend-monitor.tar.gz
             docker rm -f hot-trend-monitor 2>/dev/null || true
