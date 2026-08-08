@@ -1,0 +1,11 @@
+services:
+  hot-trend-monitor:
+    build: .
+    container_name: hot-trend-monitor
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      APP_PORT: 8080
+
