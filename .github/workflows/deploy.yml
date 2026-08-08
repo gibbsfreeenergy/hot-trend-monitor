@@ -26,21 +26,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          load: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Push image to GHCR
+        run: |
+          docker push "${{ env.IMAGE }}:latest"
+          docker push "${{ env.IMAGE }}:${{ github.sha }}"
+
+      - name: Export image archive
+        run: docker save "${{ env.IMAGE }}:${{ github.sha }}" | gzip -1 > hot-trend-monitor.tar.gz
+
+      - name: Copy image archive to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: 22
+          source: hot-trend-monitor.tar.gz
+          target: /tmp/
+          overwrite: true
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.2
         env:
           IMAGE: ${{ env.IMAGE }}:${{ github.sha }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USERNAME: ${{ github.actor }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           NEWSNOW_API_URL: ${{ secrets.NEWSNOW_API_URL }}
@@ -54,7 +71,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: 22
-          envs: IMAGE,GHCR_TOKEN,GHCR_USERNAME,DATABASE_URL,REDIS_URL,NEWSNOW_API_URL,NEWSNOW_XHS_ID,XHS_TREND_URL,XHS_COOKIE,HTTP_PROXY_URL,COLLECT_INTERVAL_SECONDS
+          envs: IMAGE,DATABASE_URL,REDIS_URL,NEWSNOW_API_URL,NEWSNOW_XHS_ID,XHS_TREND_URL,XHS_COOKIE,HTTP_PROXY_URL,COLLECT_INTERVAL_SECONDS
           script_stop: true
           script: |
             set -eu
@@ -75,8 +92,8 @@ jobs:
             ALLOW_SAMPLE_FALLBACK=true
             LOG_LEVEL=INFO
             EOF
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            docker pull "$IMAGE"
+            gzip -dc /tmp/hot-trend-monitor.tar.gz | docker load
+            rm -f /tmp/hot-trend-monitor.tar.gz
             docker rm -f hot-trend-monitor 2>/dev/null || true
             docker run -d --name hot-trend-monitor --restart unless-stopped --network host --env-file /opt/hot-trend-monitor/.env "$IMAGE"
             sleep 5
